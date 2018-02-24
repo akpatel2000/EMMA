@@ -1,0 +1,234 @@
+---
+title: "Transaction Cost of Munis for Retail Clients"
+author: "atul.patel@PrincetonPointCapital.com"
+date: "12/15/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, verbose = FALSE, fig.width=6, fig.height=4)
+
+## load libraries
+library(ggplot2)
+library(lubridate)
+library(XML)
+library(lubridate)
+library(RMySQL)
+library(dbConnect)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(jrvFinance)
+library(RSelenium)
+
+## set environment
+setwd("~/Applications/EMMA")
+Sys.setenv(TZ="America/New_York")
+
+source("emmaTradeHist.R")
+source("emmaTradeDetails.R")
+
+## set parameters
+retailSizeLimit <- 1000000
+emmaIDToSeach <- "AAB7D5C07FC3B4560729C088B78A8E27B"
+## AAB7D5C07FC3B4560729C088B78A8E27B
+## A03233E5C3045C646759617AD6CE174CD
+# A956800930E381A5B53A5B7E1A73C2599 -- 10/2016 3s of 2046
+```
+
+```{r openPort, results="hide"} 
+## Docker needs to be installed and running before code below will work
+system("docker run -d -p 4445:4444 selenium/standalone-chrome")
+Sys.sleep(3)
+
+# Start Selenium standalone server -- using port 4445 because of document conflict on 4444.  Chrome is default browser.
+remDr <- remoteDriver(remoteServerAddr = "localhost",
+                      port = 4445L,
+                      browserName = "chrome")
+remDr$open()
+
+```
+
+### Municipal Bond Market 
+Municipal bonds have long been considered difficult to trade for a variety of reasons:
+
+* The market of bonds is broad, with over 60,000 issuers and approximately 1 million outstanding bonds.[^1] 
+* The market is relatively shallow, with only $3 trillion municipal bonds versus $20 trillion treasury bonds.[^2]
+* Ownership is skewed, with over 50% of the bonds owned by retail investors.  However less than 3% of all households own municipal bonds.  Of that group, only about 1% of them buy bonds direct.[^3]
+
+In short, the municipal bond market has a large number issuers, who issue relatively little debt, which is bought by a small subset of U.S. retail investors.  Given this backdrop it is understandable that municipal bonds are not broadly covered in business media and that trade information is not readily available.  Though the municipal governing board has done much to increase transparency, municipal retail investors have a disadvantage with regards to information.  
+
+This information gap creates the environment in which spreads could be relatively wide.  In this report we try to quantify this spread using daily trade data captured over a 1 year period starting Oct 2016 to current.[^4]
+
+[^1]: Source: Federal Reserve, 3th Qtr 2017 
+[^2]: Source: MSRB Fact Book, 2016
+[^3]: Source: Brookings Institute, 2013
+[^4]: May, June, and Nov data unavailable
+
+#### Average Daily Max Spread
+What do we mean by average daily max spread?  We captured the trading activity of the 100 most active municipal bonds each day as reported by the Municipal Securities Rulemaking Board (MSRB).  This basket of 100 bonds is not static, but instead changes every day based on reported trades.  From this basket of bonds, we want to calculate the winners and losers of the day.  The winners are those who paid the least and the losers are those who paid the most, for the same bond on the same day.  Average Daily Max Spread is the average price difference between the winners and losers of all the individual bonds in our basket.
+
+```{r mainCode}
+## Access MySQL database tables emmaMostActive and rates
+db1 <- dbConnect(MySQL(), user = "root", host = "localhost", db = "dbRates", password = "Newyork@1996")
+top100 <- dbReadTable(db1, name = "emmaMostActive")
+rates <- dbReadTable(db1, name = "rates")
+closeConnectionFlag <- dbDisconnect(db1)
+
+## convert date 
+top100 <- rename(top100, date = asof)
+top100$date <- as.Date(top100$date)
+rates$date <- as.Date(rates$date)
+
+## Use copy 
+t <- top100
+r <- rates
+
+# Calc daily price change of 10Y AAA munis
+rDiff <- diff(r$muniYield10Y)
+temp <- cbind(r[2:nrow(r),], rDiff)
+temp2 <- numeric()
+
+for (i in 1:nrow(temp)) {
+    stl <- temp$date[i]
+    mat <- temp$date[i] + years(10)
+    cpn <- temp$muniYield10Y[i]
+    yld <- temp$muniYield10Y[i] + temp$rDiff[i]
+    temp2[i] <- bond.price(stl, mat, cpn, 2, yld, 
+                           convention = "30/360", comp.freq = 2)-100
+}
+rm(stl)
+rm(mat)
+rm(cpn)
+rm(yld)
+
+temp2 <- as.data.frame(temp2)
+colnames(temp2) <- c("cPrice")
+temp <- cbind(temp, temp2)
+r <- temp
+rm(temp2)
+rm(temp)
+rm(rDiff)
+
+# calc spread of 100 active bonds (high - low)
+t <- t %>% mutate(spread = emmaPriceHigh - emmaPriceLow) 
+t <- t %>% group_by(date) %>% summarise(avg = mean(spread))  
+r <- r %>% select(date, muniYield10Y, cPrice)
+# join tables t and r where date is same in both
+z <- inner_join(t, r, by = "date")
+
+#plot Daily Spread of Actively Traded Munis
+ggplot(z, aes(x = date, y=z$avg)) + geom_point(color = "blue") +
+    geom_hline(aes(yintercept = abs(mean(z$avg))), color = "blue") +
+    geom_hline(aes(yintercept = abs(mean(z$cPrice))), color = "red") +
+    ylab("Points") + 
+    ggtitle("Daily Spread on Actively Trade Munis") +
+    geom_text(aes(z$date[1],abs(mean(z$avg)),label = "AVG SPREAD on Active Bonds", vjust = -1, hjust = 0), color = "black") +
+    geom_text(aes(z$date[1],abs(mean(z$cPrice)),label = "AVG Price Chg of Benchmark", vjust = -1, hjust = 0))
+
+```
+
+In the graph above, the blue line represents the average daily max spread.  In theory the brokers are earning this spread as their bid-ask, the price of transacting with them.  Of course rates are not static and they move on a daily basis.  The red line depicts the absolute value of the daily price change of general market interest rates.  As you can see the bid-ask spread on individual bonds dwarfs any expected intra-day interest rate moves.
+
+```{r dailyAAA}
+# plot benchmark price change
+ggplot(z, aes(x = date, y = cPrice)) + geom_point(color = "red") +
+    ylab("Points") + 
+    ggtitle("Change in Benchmark Prices")
+
+```
+
+If the broker is not able to quickly find a buyer, they are exposed to multiple days of interest rate risk, which may trend against them.  There are ways a broker can mitigate these losses as a part of a risk management strategy.  It is also worth noting in the graph above that large price drops are usually followed by similar magnitude reversals.  Hence a broker is capable of capturing the lion share of the bid-ask.
+
+#### Average Spread on Individual Bond
+Now let's take a look at an individual bond example over our time period.  Here are some the most active issuers since Oct 2016.
+
+```{r activeBonds}
+# check for top 10 most active bonds
+temp <- top100 %>% count(emmaDesc) %>% arrange(desc(n)) %>% top_n(10)
+temp
+
+```
+
+We are going to select the New York City Municipal Water bond for further review.  It is traditionally an actively traded issuer and we have the added benefit of seeing the new issuance of this bond at the beginning of our time period (Oct 2016).
+
+```{r nycWaterBonds}
+# get trade data on selected emmaID
+navToHTML <- paste0("https://emma.msrb.org/SecurityDetails/TradeActivity/", emmaIDToSeach)
+remDr$navigate(navToHTML)
+remDr$findElement("css", "#ctl00_mainContentArea_disclaimerContent_yesButton")$clickElement()
+Sys.sleep(3)
+
+txt = remDr$getPageSource()
+
+emmaTradeRecord <- emmaTradeHist(txt, emmaIDToSeach)
+detailRecord <- emmaTradeDetails(txt)
+q1 <- sapply(split(emmaTradeRecord, emmaTradeRecord$emmaReportedDateTimeStamp), nrow)
+q1 <- log10(q1)
+
+# plot the trade activity  
+boxplot(emmaTradeYield ~ emmaReportedDateTimeStamp, data = emmaTradeRecord, col =      "grey", ylab = "Yield", main=paste(substr(detailRecord$emmaDesc,1,20)," ",           detailRecord$emmaInterestRate, " ", detailRecord$emmaMaturityDate))
+     abline(h=detailRecord$emmaInitialOfferYield, col = "blue")
+  
+f1 <- filter(emmaTradeRecord, emmaReportedDateTimeStamp == emmaTradeRecord$emmaReportedDateTimeStamp[1])
+m1 <- median(f1$emmaTradeYield)
+abline(h=m1, col = "green")
+
+```
+
+We have a statistically significant amount of trade data here to make appropriate inferences.  Bonds issued by New York entities have good retail participation, hence we will get a good cross section of the both institutional and retail trades.  For our case, I am going to define trades of 1mm and higher as institutional, and the inverse as retail trades.  
+
+```{r nycWaterBonds2}
+# separate into retail and institutional
+temp <- emmaTradeRecord %>% filter(emmaTradeAmount < retailSizeLimit & emmaTradeType == "S") %>% count(emmaReportedDateTimeStamp)
+temp2 <- emmaTradeRecord %>% filter(emmaTradeAmount < retailSizeLimit & emmaTradeType == "P") %>% count(emmaReportedDateTimeStamp)
+temp2 <- -1*temp2$n
+plot(temp, type = "h", main = "Retail Purchase Activity", xlab = "Date", ylab = "Trades")
+
+temp <- emmaTradeRecord %>% filter(emmaTradeAmount >= retailSizeLimit & emmaTradeType == "S") %>% count(emmaReportedDateTimeStamp)
+plot(temp, type = "h", main = "Institutional Purchase Activity", xlab = "Date", ylab = "Trades")
+
+```
+
+As you can see there is a lot more trade activity in this bond in retail size.  For reason we won't go into here, this isn't the ideal bond structure for institutional investors.  So why is it popular with retail accounts?  It might have something to do with the options retail brokers show their clients.
+
+With the NYC Water bond price history, we look at the trade data in more detail.  We query the data to see when retail clients have transacted as both buyers and sellers on the same day.  By definition of being an intermediary, it is the price a broker bought and sold on that day.  For our purpose we are taking the average price of all the broker buys and sells to get our approximation of the bid-ask spread a retail client pays.
+
+```{r nycWaterBond3}
+# break into retail and institutional and calc spread
+temp <- emmaTradeRecord %>% filter(emmaTradeAmount < retailSizeLimit & emmaTradeType == "S") %>% group_by(emmaReportedDateTimeStamp) %>% summarize(minPriceS = min(emmaTradePrice), maxPriceS = max(emmaTradePrice), meanPriceS = mean(emmaTradePrice))
+
+temp2 <- emmaTradeRecord %>% filter(emmaTradeAmount < retailSizeLimit & emmaTradeType == "P") %>% group_by(emmaReportedDateTimeStamp) %>% summarize(minPriceP = min(emmaTradePrice), maxPriceP = max(emmaTradePrice), meanPriceP = mean(emmaTradePrice))
+
+temp3 <- inner_join(temp, temp2, by = "emmaReportedDateTimeStamp")
+
+temp3 <- temp3 %>% mutate(spreadPrice = meanPriceS - meanPriceP)
+
+ggplot(data = temp3, aes(x= emmaReportedDateTimeStamp, y=spreadPrice)) + geom_point(color = "blue") + geom_hline(yintercept = mean(temp3$spreadPrice)) + ylab("Points") + xlab("Date") + ggtitle(paste(substr(detailRecord$emmaDesc,1,20)," ",           detailRecord$emmaInterestRate, " ", detailRecord$emmaMaturityDate, "Bid-Ask"))
+
+avgNYCWaterSpread <- mean(temp3$spreadPrice)
+
+```
+
+We calculate the average spread that retail clients paid in secondary trading for this bond to be `r avgNYCWaterSpread` points.
+Now there are a lot of reasons why this may not be the spread a broker earned.  The most obvious is that we can't see if it was the same dealer who did both sides of the trade.  However it is interesting to note that the spread during our time period has always been positive, despite our time period encompassing both a rise and fall of overall interest rates.  
+
+Remember we picked what is considered a new and relatively liquid municipal bond.  There are many more smaller and less liquid bonds in which the spreads may rightfully be even wider.
+
+Given that there is no national exchange where all bids and offers must be transmitted, investors rely on brokers for price discovery.  From our analysis, it is likely that retail clients can see bid-ask spread in excess of 2 points when tapping their brokers for liquidity.  Given that current yield for a AAA municipal is around 2%, is equivalent to 1 year worth of interest.  There are not many ways retail clients can reduce this bid-ask spread if they need to tap their broker for liquidity when selling a bond.  However when buying a bond, retail has the option of buying bonds in the new issue where:
+
+* The issuer of the bond pays the spread.
+* All investors pay the same price for the same bond.
+* Sometimes investors get a discounted price for large new issue deals.
+
+#### Summary
+In short, retail clients pay a substantial price when buying and selling municipal bonds in the secondary market.  The bid-ask for liquid municipal bonds is well over 2 points.  Given the current yields, it is equivalent to one year worth of interest.  Retail clients can bypass the transaction cost when buying bonds by doing so in the new issue market.  They can also mitigate the need to tap their broker for liquidity when selling a bond, by structuring various ladder strategies.
+
+The truth is whether buying munis or stocks, your long-term returns are generally better when you minimize the cost of trading.  It is our intent here to educate existing and potential municipal investors of the cost when buying and selling a municipal bond.
+
+```{r shutDown}
+remDr$close()
+system("docker stop $(docker ps -q)")
+```
+
+##### Appendix
