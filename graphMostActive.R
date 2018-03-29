@@ -33,6 +33,7 @@ emmaID <- c("ADFC0EC12B488FE0B0944581D3C5E164F",
 remDr$open()
 Sys.sleep(3)
 
+u <- "https://emma.msrb.org/TradeData/MostActivelyTraded"
 remDr$navigate(u)
 Sys.sleep(2)
 remDr$findElement("css", "#ctl00_mainContentArea_disclaimerContent_yesButton")$clickElement()
