@@ -4,7 +4,7 @@ library(dbConnect)
 library(RSelenium)
 library(lubridate)
 library(stringr)
-# source("emmaTradeDetails.R")
+
 Sys.setenv(TZ='EST')
 
 setwd("~/Applications/EMMA")
@@ -58,18 +58,17 @@ emmaTradeAmount <- str_trim(emmaTradeAmount, side="both") %>% as.numeric()
 # Get links that have emmaID
 attrCUSIP <- xpathApply(doc, "//tbody//a[@href]", xmlAttrs)
 links <- sapply(attrCUSIP, function(x) x[[3]])
+
 # Extract emmaID from link
 emmaID <- ""
-
 x = 1
 for (i in 1:(length(links)/3)) {
     emmaID[i] <- substr(links[x], (str_locate(links[1], "="))+1, nchar(links[x]))
-    # v1 <- as.character(emmaID[i])
-    # r1 <- emmaTradeDetails(v1)
     x = x + 3
 }
 
 # Construct Dataframe
+activelyTradedRecord <- NULL
 activelyTradedRecord <- data.frame(asof = Sys.Date(),
                                    emmaID,
                                    emmaDesc,
@@ -85,9 +84,15 @@ activelyTradedRecord <- data.frame(asof = Sys.Date(),
 
 
 # Write record to database
-db1 <- dbConnect(MySQL(), user = "root", host = "localhost", db = "dbRates", password = "Newyork@1996")
-dbWriteTable(db1, activelyTradedRecord, name = "emmaMostActive", append = TRUE, row.names = FALSE)
-dbDisconnect(db1)
+if (nrow(activelyTradedRecord) == 100) {
+    db1 <- dbConnect(MySQL(), user = "root", host = "localhost", db = "dbRates", password = "Newyork@1996")
+    dbWriteTable(db1, activelyTradedRecord, name = "emmaMostActive", append = TRUE, row.names = FALSE)
+    print("All Good -- Record written to database")
+    dbDisconnect(db1)    
+} else {
+    print("Error -- Did not write record")
+}
+
 
 # Close connection
 remDr$close()
