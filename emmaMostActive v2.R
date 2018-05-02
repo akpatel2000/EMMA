@@ -4,6 +4,7 @@ library(dbConnect)
 library(RSelenium)
 library(lubridate)
 library(stringr)
+library(dplyr)
 
 Sys.setenv(TZ='EST')
 
@@ -63,7 +64,8 @@ links <- sapply(attrCUSIP, function(x) x[[3]])
 emmaID <- ""
 x = 1
 for (i in 1:(length(links)/3)) {
-    emmaID[i] <- substr(links[x], (str_locate(links[1], "="))+1, nchar(links[x]))
+    # emmaID[i] <- substr(links[x], (str_locate(links[1], "="))+1, nchar(links[x]))
+    emmaID[i] <- substr(links[x], (str_locate(links[x], "Details"))[2]+2, nchar(links[x]))
     x = x + 3
 }
 
@@ -92,7 +94,6 @@ if (nrow(activelyTradedRecord) == 100) {
 } else {
     print("Error -- Did not write record")
 }
-
 
 # Close connection
 remDr$close()
